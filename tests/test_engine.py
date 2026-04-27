@@ -44,14 +44,14 @@ class TestCheckWinner:
     def test_wolf_wins_all_gods_dead(self):
         """屠边：所有神出局 → 狼人胜"""
         s = make_state([Role.WEREWOLF, Role.VILLAGER, Role.SEER, Role.WITCH])
-        s.kill_player(3)
-        s.kill_player(4)
+        s.kill_player(3)  # seer
+        s.kill_player(4)  # witch
         assert check_winner(s) == Faction.WOLF
 
     def test_wolf_wins_all_villagers_dead(self):
         """屠边：所有平民出局 → 狼人胜"""
         s = make_state([Role.WEREWOLF, Role.VILLAGER, Role.SEER])
-        s.kill_player(2)
+        s.kill_player(2)  # villager
         assert check_winner(s) == Faction.WOLF
 
     def test_game_continues(self):
@@ -79,7 +79,7 @@ class TestValidateAction:
     def test_kill_self_allowed(self):
         s = make_state([Role.WEREWOLF, Role.VILLAGER])
         ok, msg = validate_action(s, 1, "KILL", 1)
-        assert ok
+        assert ok  # 自刀允许
 
     def test_kill_dead_target(self):
         s = make_state([Role.WEREWOLF, Role.VILLAGER, Role.SEER])
@@ -157,21 +157,23 @@ class TestValidateAction:
 
 class TestTallyVotes:
     def test_simple_majority(self):
+        # 1,2,3 投 5; 4 投 6 → 5 得 3 票, 6 得 1 票
         votes = {1: 5, 2: 5, 3: 5, 4: 6}
         result = tally_votes(votes)
         assert result["top"] == [5]
         assert not result["is_tie"]
 
     def test_tie(self):
+        # 1,2 投 3; 3,4 投 5 → 各 2 票, 平票
         votes = {1: 3, 2: 3, 3: 5, 4: 5}
         result = tally_votes(votes)
         assert result["is_tie"]
         assert set(result["tied_players"]) == {3, 5}
 
     def test_sheriff_1_5_votes(self):
-        votes = {1: 2, 2: 2, 3: 3}
+        votes = {1: 2, 2: 2, 3: 3}  # voter 3 is sheriff
         result = tally_votes(votes, sheriff_id=3)
-        assert result["top"] == [2]
+        assert result["top"] == [2]  # 1.5 > 1.0
 
     def test_empty_votes(self):
         result = tally_votes({})
@@ -181,13 +183,13 @@ class TestTallyVotes:
 
 class TestResolveWolfVotes:
     def test_majority(self):
-        votes = {1: 5, 2: 5, 3: 6, 4: 6}
-        assert resolve_wolf_votes(votes) == 6
+        votes = {1: 5, 2: 5, 3: 5, 4: 6}
+        assert resolve_wolf_votes(votes) == 5
 
     def test_tie_random(self):
         votes = {1: 5, 2: 5}
         result = resolve_wolf_votes(votes)
-        assert result in [5, None]
+        assert result in [5, None]  # tie → random or skip
 
     def test_all_skip(self):
         votes = {1: 0, 2: 0, 3: 0}
@@ -200,6 +202,7 @@ class TestResolveWolfVotes:
 
 class TestResolveElection:
     def test_majority(self):
+        # 1,2 投 3; 4 投 4 → 3 得 2 票, 4 得 1 票, 3 当选
         votes = {1: 3, 2: 3, 4: 4}
         result = resolve_election(votes, [3, 4])
         assert result == 3
