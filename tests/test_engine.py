@@ -183,8 +183,8 @@ class TestTallyVotes:
 
 class TestResolveWolfVotes:
     def test_majority(self):
-        votes = {1: 5, 2: 5, 3: 6, 4: 6}
-        assert resolve_wolf_votes(votes) == 6
+        votes = {1: 5, 2: 5, 3: 5, 4: 6}
+        assert resolve_wolf_votes(votes) == 5
 
     def test_tie_random(self):
         votes = {1: 5, 2: 5}

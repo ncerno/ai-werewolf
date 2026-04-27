@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import random
+import re
 from typing import Awaitable, Callable, Optional
 
 from .state import GameState, Phase, Player, Role, Faction
@@ -11,6 +13,7 @@ from .rules import (
     resolve_wolf_votes,
     resolve_election,
     tally_votes,
+    validate_action,
 )
 
 EventCallback = Callable[[str, dict], Awaitable[None]]
@@ -23,7 +26,6 @@ def create_players() -> list[Player]:
         Role.SEER, Role.WITCH, Role.HUNTER, Role.FOOL,
         Role.VILLAGER, Role.VILLAGER, Role.VILLAGER, Role.VILLAGER,
     ]
-    import random
     random.shuffle(roles)
 
     players = []
@@ -34,7 +36,7 @@ def create_players() -> list[Player]:
             p.witch_poison_available = True
             p.witch_knows_dead = True
         if role == Role.HUNTER:
-            p.hunter_can_shoot = True  # 初始可用，被毒后设为 False
+            p.hunter_can_shoot = True
         players.append(p)
     return players
 
@@ -51,18 +53,39 @@ class GameController:
     def __init__(self):
         self.state: Optional[GameState] = None
         self._event_callback: Optional[EventCallback] = None
-        self._mode: str = "auto"  # auto / god / player
+        self._mode: str = "auto"
+        self._agents: dict[int, object] = {}   # {player_id: PlayerAgent}
+        self._config: dict = {}
 
     # ============================================================
     # 游戏生命周期
     # ============================================================
 
-    def init_game(self, mode: str = "auto"):
+    def init_game(self, mode: str = "auto", config: dict | None = None):
         """初始化新游戏。"""
-        import random
+        from ..agent.player import PlayerAgent
+        from ..utils.config import get_llm_config_for_role
+
         players = create_players()
         self.state = GameState(players=players)
         self._mode = mode
+        self._config = config or {}
+
+        # 为每个玩家创建 PlayerAgent
+        for player in players:
+            role_str = player.role.value
+            model_config = get_llm_config_for_role(role_str, self._config)
+            agent = PlayerAgent(player.player_id, role_str, model_config, self.state)
+            self._agents[player.player_id] = agent
+
+        # 狼人互相告知队友
+        wolf_ids = [p.player_id for p in players if p.role == Role.WEREWOLF]
+        for wid in wolf_ids:
+            teammates = [t for t in wolf_ids if t != wid]
+            self._agents[wid].observe(
+                f"[系统] 你的狼队友是：{'、'.join(f'{t}号' for t in teammates)}"
+            )
+
         self._emit("game_init", {"mode": mode, "players": len(players)})
 
     async def run(self, event_callback: EventCallback = None) -> Faction:
@@ -97,6 +120,9 @@ class GameController:
             # --- 白天阶段 ---
             await self._handle_day()
 
+            # 周期性压缩 agent memory
+            await self._summarize_all()
+
     # ============================================================
     # 夜晚阶段
     # ============================================================
@@ -129,15 +155,13 @@ class GameController:
             self._emit("wolf_action", {"decision": None, "reason": "无存活狼人"})
             return
 
-        # 收集各狼人投票（模拟；Phase 3 接入 LLM 后替换为异步调用）
         wolf_votes = {}
         for wolf in alive_wolves:
-            decision = await self._ask_llm(wolf.player_id, "KILL", {
+            result = await self._ask_llm(wolf.player_id, "KILL", {
                 "phase": "NIGHT_WOLF",
                 "alive_wolves": [w.player_id for w in alive_wolves],
             })
-            target_id = self._parse_decision(decision, wolf.player_id)
-            wolf_votes[wolf.player_id] = target_id
+            wolf_votes[wolf.player_id] = result.target_id
 
         target = resolve_wolf_votes(wolf_votes)
 
@@ -151,71 +175,49 @@ class GameController:
     async def _night_witch(self):
         """女巫行动：先看死者，再决定用药。"""
         state = self.state
-        witch = state.get_alive_by_role(Role.WITCH)
+        witch_list = state.get_alive_by_role(Role.WITCH)
 
-        if not witch:
+        if not witch_list:
             return
-        witch = witch[0]
+        witch = witch_list[0]
 
         # 告知死者
         dead_id = state.wolf_target
         if witch.witch_knows_dead:
-            msg = f"今夜 {dead_id} 号玩家死亡" if dead_id else "今夜是平安夜"
-            state.add_private_log(witch.player_id, msg)
+            msg = f"[系统] 今夜 {dead_id} 号玩家死亡" if dead_id else "[系统] 今夜是平安夜"
+            self._send_to_agent(witch.player_id, msg)
 
         # 用药决策
         if witch.witch_save_available or witch.witch_poison_available:
-            decision = await self._ask_llm(witch.player_id, "WITCH_ACTION", {
+            result = await self._ask_llm(witch.player_id, "WITCH_ACTION", {
                 "phase": "NIGHT_WITCH",
                 "dead_player": dead_id,
                 "save_available": witch.witch_save_available,
                 "poison_available": witch.witch_poison_available,
             })
-            # 解析女巫行动
-            self._parse_witch_action(decision, witch)
 
-    def _parse_witch_action(self, decision: str, witch: Player):
-        """解析女巫的用药决策。"""
-        state = self.state
-        decision_upper = decision.upper().strip()
+            # 同晚不能用两种药
+            if result.action == "SAVE" and result.action == "POISON":
+                # LLM 同时返回两种 → 随机选一种
+                if random.random() < 0.5:
+                    result = result.__class__(action="SAVE", target_id=0, speech="", raw_response=result.raw_response)
+                else:
+                    result = result.__class__(action="POISON", target_id=result.target_id, speech="", raw_response=result.raw_response)
 
-        # 同晚不能使用两种药
-        has_save = "SAVE" in decision_upper
-        has_poison = "POISON" in decision_upper
+            if result.action == "SAVE" and witch.witch_save_available:
+                target = state.wolf_target
+                if target:
+                    state.witch_saved = target
+                    witch.witch_save_available = False
+                    msg = f"[系统] 你使用了解药救了 {target} 号" if target != witch.player_id else "[系统] 你使用了解药自救"
+                    self._send_to_agent(witch.player_id, msg)
 
-        if has_save and has_poison:
-            # 规则：同晚不能用两种药，随机选一种
-            import random
-            if random.random() < 0.5:
-                has_poison = False
-            else:
-                has_save = False
-
-        if has_save and witch.witch_save_available:
-            target = state.wolf_target
-            if target == witch.player_id:
-                # 女巫自救
-                state.witch_saved = target
-                witch.witch_save_available = False
-                state.add_private_log(witch.player_id, "你使用了解药自救")
-            elif target:
-                state.witch_saved = target
-                witch.witch_save_available = False
-                state.add_private_log(witch.player_id, f"你使用了解药救了 {target} 号")
-
-        if has_poison and witch.witch_poison_available:
-            # 提取毒药目标
-            import re
-            m = re.search(r'POISON\s*(\d+)', decision_upper)
-            if m:
-                target_id = int(m.group(1))
-                valid, _ = __import__('src.engine.rules', fromlist=['validate_action']).validate_action(
-                    state, witch.player_id, "POISON", target_id
-                )
+            elif result.action == "POISON" and witch.witch_poison_available:
+                valid, _ = validate_action(state, witch.player_id, "POISON", result.target_id)
                 if valid:
-                    state.witch_poisoned = target_id
+                    state.witch_poisoned = result.target_id
                     witch.witch_poison_available = False
-                    state.add_private_log(witch.player_id, f"你毒杀了 {target_id} 号")
+                    self._send_to_agent(witch.player_id, f"[系统] 你毒杀了 {result.target_id} 号")
 
         # 解药用完后不再获知死者
         if not witch.witch_save_available:
@@ -224,54 +226,46 @@ class GameController:
     async def _night_seer(self):
         """预言家查验。"""
         state = self.state
-        seer = state.get_alive_by_role(Role.SEER)
-        if not seer:
+        seer_list = state.get_alive_by_role(Role.SEER)
+        if not seer_list:
             return
-        seer = seer[0]
+        seer = seer_list[0]
 
-        decision = await self._ask_llm(seer.player_id, "CHECK", {
-            "phase": "NIGHT_SEER",
-        })
-        self._parse_seer_action(decision, seer)
+        result = await self._ask_llm(seer.player_id, "CHECK", {"phase": "NIGHT_SEER"})
 
-    def _parse_seer_action(self, decision: str, seer: Player):
-        import re
-        m = re.search(r'CHECK\s*(\d+)', decision.upper().strip())
-        if not m:
-            return
-        target_id = int(m.group(1))
-        state = self.state
-        valid, _ = __import__('src.engine.rules', fromlist=['validate_action']).validate_action(
-            state, seer.player_id, "CHECK", target_id
-        )
-        if valid:
-            state.seer_checked = target_id
-            target = state.get_player(target_id)
-            is_good = target.is_good
-            state.seer_result = is_good
-            result_text = "好人" if is_good else "狼人"
-            state.add_private_log(seer.player_id, f"查验 {target_id} 号：{result_text}")
+        if result.action == "CHECK" and result.target_id > 0:
+            valid, _ = validate_action(state, seer.player_id, "CHECK", result.target_id)
+            if valid:
+                state.seer_checked = result.target_id
+                target = state.get_player(result.target_id)
+                is_good = target.is_good
+                state.seer_result = is_good
+                result_text = "好人" if is_good else "狼人"
+                self._send_to_agent(seer.player_id, f"[系统] 查验 {result.target_id} 号：{result_text}")
 
     async def _night_hunter(self):
         """猎人确认状态。"""
         state = self.state
-        hunter = state.get_alive_by_role(Role.HUNTER)
-        if not hunter:
+        hunter_list = state.get_alive_by_role(Role.HUNTER)
+        if not hunter_list:
             return
-        hunter = hunter[0]
-        state.add_private_log(
+        hunter = hunter_list[0]
+        self._send_to_agent(
             hunter.player_id,
-            f"开枪状态：{'可开枪' if hunter.hunter_can_shoot else '不可开枪'}"
+            f"[系统] 开枪状态：{'可开枪' if hunter.hunter_can_shoot else '不可开枪'}"
         )
 
     async def _night_fool(self):
         """白痴确认身份（仅首夜）。"""
         state = self.state
-        fool = state.get_alive_by_role(Role.FOOL)
-        if not fool:
+        fool_list = state.get_alive_by_role(Role.FOOL)
+        if not fool_list:
             return
-        fool = fool[0]
-        state.add_private_log(fool.player_id, "你是白痴，被放逐时翻牌免死，但丧失投票权")
+        fool = fool_list[0]
+        self._send_to_agent(
+            fool.player_id,
+            "[系统] 你是白痴，被放逐时翻牌免死，但丧失投票权"
+        )
 
     # ============================================================
     # 白天阶段
@@ -312,7 +306,7 @@ class GameController:
 
         # 女巫解药判定
         if state.witch_saved == wolf_target:
-            wolf_target = None  # 被救活
+            wolf_target = None
 
         # 狼刀死亡
         if wolf_target:
@@ -323,7 +317,6 @@ class GameController:
         if state.witch_poisoned:
             deaths.append((state.witch_poisoned, "毒杀"))
             state.kill_player(state.witch_poisoned, "毒杀")
-            # 被毒杀的猎人不能开枪
             poisoned = state.get_player(state.witch_poisoned)
             if poisoned and poisoned.role == Role.HUNTER:
                 poisoned.hunter_can_shoot = False
@@ -339,6 +332,13 @@ class GameController:
             "peaceful": len(deaths) == 0,
         })
 
+        # 广播到所有 agent
+        if deaths:
+            death_msg = "昨夜死亡：" + "、".join(f"{pid}号" for pid, _ in deaths)
+        else:
+            death_msg = "昨夜是平安夜"
+        self._broadcast_to_agents(death_msg)
+
         # 重置夜晚状态
         state.wolf_target = None
         state.witch_saved = None
@@ -350,27 +350,24 @@ class GameController:
         """遗言环节（第一夜死者有遗言）。"""
         state = self.state
         if state.turn > 1:
-            return  # 仅第一夜
+            return
 
         for player in state.players:
-            if not player.alive and player.player_id not in [
-                getattr(state, 'witch_poisoned', None)
-            ]:
-                # 被刀的死者有遗言
-                pass
-        # 遗言逻辑在 Phase 3 接入 LLM 后实现
+            if not player.alive:
+                speech = await self._ask_llm_speech(player.player_id, {
+                    "phase": "LAST_WORDS",
+                    "note": "你在昨夜死亡，这是你的遗言",
+                })
+                if speech:
+                    state.add_public_log(f"{player.player_id} 号遗言：{speech}")
+                    self._broadcast_to_agents(f"[遗言] {player.player_id}号：{speech}")
 
     async def _election(self):
         """警长竞选。"""
         state = self.state
         state.phase = Phase.DAY_ELECTION
 
-        # 简化流程：随机决定上警，或全部 AI 决定
-        # Phase 3 接入 LLM 后让每个 AI 决定是否上警
         candidates = list(state.get_alive_ids())
-        import random
-
-        # 随机选 2-4 人上警
         num_candidates = random.randint(2, min(4, len(candidates)))
         candidates = random.sample(candidates, num_candidates)
 
@@ -379,17 +376,19 @@ class GameController:
             return
 
         self._emit("election_start", {"candidates": candidates})
+        self._broadcast_to_agents(
+            f"警长竞选开始，候选人：{'、'.join(f'{c}号' for c in candidates)}"
+        )
 
         # 投票
         voters = [p for p in state.get_alive_players() if p.player_id not in candidates]
         votes = {}
         for voter in voters:
-            decision = await self._ask_llm(voter.player_id, "VOTE_ELECTION", {
+            result = await self._ask_llm(voter.player_id, "VOTE_ELECTION", {
                 "candidates": candidates,
             })
-            target = self._parse_decision(decision, voter.player_id, candidates)
-            if target:
-                votes[voter.player_id] = target
+            if result.target_id and result.target_id in candidates:
+                votes[voter.player_id] = result.target_id
 
         sheriff_id = resolve_election(votes, candidates)
 
@@ -397,10 +396,10 @@ class GameController:
             state.sheriff_id = sheriff_id
             state.sheriff_elected = True
             self._emit("election", {"sheriff_id": sheriff_id})
+            self._broadcast_to_agents(f"{sheriff_id} 号玩家当选警长")
         else:
-            # 平票，进入 PK
-            # PK 后仍平票 → 无警长
             self._emit("election", {"sheriff_id": None, "reason": "平票"})
+            self._broadcast_to_agents("警长竞选平票，本局无警长")
 
     async def _speech_round(self):
         """发言轮。按顺序让每个存活玩家发言。"""
@@ -410,19 +409,24 @@ class GameController:
         # 确定发言顺序
         if state.sheriff_id and state.sheriff_id in alive:
             direction = "left"
-            # 从警长左边/右边开始（默认左）
             idx = alive.index(state.sheriff_id)
             order = alive[idx + 1:] + alive[:idx] if direction == "left" else alive[idx - 1::-1] + alive[:idx - 1:-1]
         else:
-            order = alive  # 无警长按编号
+            order = alive
 
         state.speech_order = order
 
         for speaker_id in order:
             state.current_speaker = speaker_id
             self._emit("speech_turn", {"player_id": speaker_id})
-            # Phase 3 接入 LLM：让 speaker 发言
-            # 发言内容通过 LLM 生成，推送到日志
+
+            speech = await self._ask_llm_speech(speaker_id, {
+                "phase": "DAY_SPEECH",
+                "turn": state.turn,
+            })
+            if speech:
+                state.add_public_log(f"{speaker_id} 号发言：{speech}")
+                self._broadcast_to_agents(f"[发言] {speaker_id}号：{speech}")
 
     async def _vote_round(self):
         """投票放逐轮。"""
@@ -430,11 +434,12 @@ class GameController:
         voters = state.get_voters()
         votes = {}
 
+        self._broadcast_to_agents("投票开始，请选择你要放逐的玩家。")
+
         for voter in voters:
-            decision = await self._ask_llm(voter.player_id, "VOTE", {})
-            target = self._parse_decision(decision, voter.player_id)
-            if target:
-                votes[voter.player_id] = target
+            result = await self._ask_llm(voter.player_id, "VOTE", {})
+            if result.target_id:
+                votes[voter.player_id] = result.target_id
 
         result = tally_votes(votes, state.sheriff_id)
         state.vote_result = result["counts"]
@@ -444,30 +449,36 @@ class GameController:
             state.pk_candidates = result["tied_players"]
             state.phase = Phase.DAY_PK_SPEECH
             self._emit("vote_tie", {"tied_players": result["tied_players"]})
+            self._broadcast_to_agents(
+                f"投票平票！PK 候选人：{'、'.join(f'{c}号' for c in result['tied_players'])}"
+            )
 
             # PK 发言
             for pid in state.pk_candidates:
                 state.current_speaker = pid
                 self._emit("speech_turn", {"player_id": pid, "pk": True})
+                speech = await self._ask_llm_speech(pid, {
+                    "phase": "DAY_PK_SPEECH",
+                })
+                if speech:
+                    state.add_public_log(f"{pid} 号 PK 发言：{speech}")
+                    self._broadcast_to_agents(f"[PK发言] {pid}号：{speech}")
 
-            # PK 投票（PK 台上的人不能投票）
+            # PK 投票
             state.phase = Phase.DAY_PK_VOTE
             pk_voters = [v for v in voters if v.player_id not in state.pk_candidates]
             pk_votes = {}
             for voter in pk_voters:
-                decision = await self._ask_llm(voter.player_id, "VOTE", {
+                result = await self._ask_llm(voter.player_id, "VOTE", {
                     "pk_candidates": state.pk_candidates,
                 })
-                target = self._parse_decision(
-                    decision, voter.player_id, state.pk_candidates
-                )
-                if target:
-                    pk_votes[voter.player_id] = target
+                if result.target_id and result.target_id in state.pk_candidates:
+                    pk_votes[voter.player_id] = result.target_id
 
             pk_result = tally_votes(pk_votes, state.sheriff_id)
             if pk_result["is_tie"]:
-                # 仍平票 → 无人出局
                 self._emit("vote_result", {"eliminated": None, "reason": "平票"})
+                self._broadcast_to_agents("PK 投票仍然平票，无人被放逐。")
                 return
             else:
                 eliminated = pk_result["top"][0]
@@ -480,38 +491,38 @@ class GameController:
         # 执行放逐
         eliminated_player = state.get_player(eliminated)
         if eliminated_player.role == Role.FOOL and not eliminated_player.fool_revealed:
-            # 白痴翻牌
             eliminated_player.fool_revealed = True
             eliminated_player.has_vote = False
             state.add_public_log(f"{eliminated} 号翻牌为白痴，免死但丧失投票权")
+            self._broadcast_to_agents(f"{eliminated} 号被放逐，翻牌为白痴！免死但丧失投票权。")
             self._emit("fool_revealed", {"player_id": eliminated})
         else:
             state.kill_player(eliminated, "放逐")
+            self._broadcast_to_agents(f"{eliminated} 号被放逐出局。")
 
             # 猎人开枪
             if eliminated_player.role == Role.HUNTER and eliminated_player.hunter_can_shoot:
-                decision = await self._ask_llm(eliminated, "SHOOT", {
+                result = await self._ask_llm(eliminated, "SHOOT", {
                     "phase": "HUNTER_DEATH",
                 })
-                import re
-                m = re.search(r'SHOOT\s*(\d+)', decision.upper().strip())
-                if m:
-                    shoot_target = int(m.group(1))
-                    if state.get_player(shoot_target) and state.get_player(shoot_target).alive:
-                        state.kill_player(shoot_target, "猎人开枪")
-                        self._emit("hunter_shoot", {"target": shoot_target})
+                if result.action == "SHOOT" and result.target_id > 0:
+                    target = state.get_player(result.target_id)
+                    if target and target.alive:
+                        state.kill_player(result.target_id, "猎人开枪")
+                        self._broadcast_to_agents(f"猎人开枪带走了 {result.target_id} 号！")
+                        self._emit("hunter_shoot", {"target": result.target_id})
 
             # 警长移交
             if eliminated == state.sheriff_id:
-                decision = await self._ask_llm(eliminated, "GIVE_BADGE", {})
-                import re
-                m = re.search(r'GIVE_BADGE\s*(\d+)', decision.upper().strip())
-                if m:
-                    new_sheriff = int(m.group(1))
-                    if state.get_player(new_sheriff) and state.get_player(new_sheriff).alive:
-                        state.sheriff_id = new_sheriff
+                result = await self._ask_llm(eliminated, "GIVE_BADGE", {})
+                if result.action == "GIVE_BADGE" and result.target_id > 0:
+                    target = state.get_player(result.target_id)
+                    if target and target.alive:
+                        state.sheriff_id = result.target_id
+                        self._broadcast_to_agents(f"警长将警徽移交给了 {result.target_id} 号。")
                     else:
-                        state.sheriff_id = None  # 撕警徽
+                        state.sheriff_id = None
+                        self._broadcast_to_agents("警徽被撕毁，本局不再有警长。")
 
     async def _resolve_vote(self):
         """处理投票后的收尾。"""
@@ -524,76 +535,40 @@ class GameController:
         state.current_speaker = None
 
     # ============================================================
-    # 辅助方法
+    # LLM 交互
     # ============================================================
 
-    async def _ask_llm(self, player_id: int, action_hint: str, context: dict) -> str:
-        """请求 LLM 决策。Phase 3 接入真实的 LLM 调用。
+    async def _ask_llm(self, player_id: int, action_hint: str, context: dict):
+        """请求 LLM 决策。委托给 PlayerAgent.decide()。"""
+        from ..agent.parser import ActionResult
+        agent = self._agents.get(player_id)
+        if not agent:
+            return ActionResult(action="SKIP", target_id=0, speech="", raw_response="[NO AGENT]")
+        return await agent.decide(action_hint, context)
 
-        当前返回占位值，供 Phase 2 独立测试使用。
-        """
-        import random
-        state = self.state
-        player = state.get_player(player_id)
+    async def _ask_llm_speech(self, player_id: int, context: dict) -> str:
+        """请求 LLM 发言。委托给 PlayerAgent.speak()。"""
+        agent = self._agents.get(player_id)
+        if not agent:
+            return ""
+        return await agent.speak(context)
 
-        if action_hint == "KILL":
-            alive = state.get_alive_ids()
-            # 狼人不杀狼同伴
-            targets = [pid for pid in alive if pid != player_id
-                       and state.get_player(pid).role != Role.WEREWOLF]
-            if not targets:
-                return "SKIP"
-            return f"KILL {random.choice(targets)}"
+    def _send_to_agent(self, player_id: int, msg: str):
+        """向单个 agent 发送私密消息。"""
+        agent = self._agents.get(player_id)
+        if agent:
+            agent.observe(msg)
 
-        if action_hint == "CHECK":
-            alive = state.get_alive_ids()
-            targets = [pid for pid in alive if pid != player_id]
-            return f"CHECK {random.choice(targets)}"
+    def _broadcast_to_agents(self, msg: str):
+        """向所有 agent 广播公开消息。"""
+        for agent in self._agents.values():
+            agent.observe(msg)
 
-        if action_hint in ("VOTE", "VOTE_ELECTION"):
-            candidates = context.get("pk_candidates") or context.get("candidates") or state.get_alive_ids()
-            targets = [pid for pid in candidates if pid != player_id]
-            if not targets:
-                return "SKIP"
-            return f"VOTE {random.choice(targets)}"
-
-        if action_hint == "SHOOT":
-            alive = state.get_alive_ids()
-            targets = [pid for pid in alive if pid != player_id]
-            return f"SHOOT {random.choice(targets)}" if random.random() > 0.5 else "SKIP"
-
-        if action_hint == "WITCH_ACTION":
-            if state.wolf_target and player.witch_save_available:
-                return "SAVE" if random.random() > 0.5 else "SKIP"
-            return "SKIP"
-
-        if action_hint == "GIVE_BADGE":
-            alive = state.get_alive_ids()
-            targets = [pid for pid in alive if pid != player_id]
-            return f"GIVE_BADGE {random.choice(targets)}"
-
-        return "SKIP"
-
-    def _parse_decision(self, decision: str, player_id: int, allowed_targets: list[int] = None) -> int:
-        """从 LLM 返回文本中提取目标 ID。"""
-        import re
-        decision_upper = decision.upper().strip()
-
-        if "SKIP" in decision_upper:
-            return 0
-
-        m = re.search(r'(?:KILL|CHECK|VOTE|SHOOT|POISON|GIVE_BADGE)\s*(\d+)', decision_upper)
-        if m:
-            target = int(m.group(1))
-            if allowed_targets is None or target in allowed_targets:
-                return target
-
-        # 随机选一个合法目标
-        if allowed_targets:
-            return random.choice(allowed_targets) if allowed_targets else 0
-        return 0
+    async def _summarize_all(self):
+        """触发所有 agent 的 memory 压缩。"""
+        for agent in self._agents.values():
+            await agent.summarize()
 
     def _emit(self, event_type: str, data: dict):
-        """触发事件回调（同步版本，供同步方法使用）。"""
-        # 事件先缓存到 state，后续由 WebSocket 层拉取
+        """触发事件回调。后续由 WebSocket 层拉取。"""
         pass
