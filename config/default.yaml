@@ -1,0 +1,91 @@
+# AI 狼人杀·默认配置
+# 可通过前端设置页面覆盖，用户配置保存到 data/user_config.json
+
+game:
+  # 游戏模式: auto(旁观) / god(上帝) / player(玩家)
+  mode: auto
+  # 玩家数量（固定12人局）
+  player_count: 12
+  # 发言超时（秒）
+  speech_timeout: 120
+  # 投票超时（秒）
+  vote_timeout: 30
+
+roles:
+  # 各身份数量
+  werewolf: 4
+  seer: 1
+  witch: 1
+  hunter: 1
+  fool: 1
+  villager: 4
+
+llm:
+  # 单模型模式：所有 Agent 共用此配置
+  default:
+    model: deepseek-chat
+    api_base: https://api.deepseek.com/v1
+    api_key: ""
+    temperature: 0.7
+    max_tokens: 2048
+
+  # 多模型模式：按角色覆盖（留空则使用 default）
+  role_overrides:
+    werewolf:
+      enabled: false
+      model: ""
+      api_base: ""
+      api_key: ""
+      temperature: 0.7
+    seer:
+      enabled: false
+      model: ""
+      api_base: ""
+      api_key: ""
+      temperature: 0.7
+    witch:
+      enabled: false
+      model: ""
+      api_base: ""
+      api_key: ""
+      temperature: 0.7
+    hunter:
+      enabled: false
+      model: ""
+      api_base: ""
+      api_key: ""
+      temperature: 0.7
+    fool:
+      enabled: false
+      model: ""
+      api_base: ""
+      api_key: ""
+      temperature: 0.7
+    villager:
+      enabled: false
+      model: ""
+      api_base: ""
+      api_key: ""
+      temperature: 0.7
+
+  # 上帝 Agent（模式三使用）
+  god_agent:
+    model: deepseek-chat
+    api_base: https://api.deepseek.com/v1
+    api_key: ""
+    temperature: 0.3
+    max_tokens: 4096
+
+output:
+  # 游戏日志输出目录
+  log_dir: data/game_logs/
+  # 是否保存日志文件
+  save_log: true
+  # 控制台日志级别: DEBUG / INFO / WARNING / ERROR
+  log_level: INFO
+
+server:
+  host: 0.0.0.0
+  port: 8000
+  # 是否自动重载（开发用）
+  reload: false
