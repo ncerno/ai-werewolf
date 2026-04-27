@@ -141,11 +141,14 @@ GameController：回合调度、阶段推进、并发控制
 
 ## 开发纪律
 - 开发前先读本文件，再动手
+- **开发前**：读取 `docs/开发进度.md` 确认当前阶段和状态
+- **开发后**：更新 `docs/开发进度.md` 同步完成情况
 - 每个阶段完成必须做验证
 - 大改动先进 Plan Mode，确认后再实施
 - 改规范先改 CLAUDE.md，再改实践
 - 密钥、token 不进代码、不进提交、不进日志
 - 不为了跑通而注释报错或绕过校验
+- 每个 Phase 完成后 commit + push GitHub
 
 ## 验证命令
 - `python -c "import openai; print('ok')"` — 检查 openai 依赖
