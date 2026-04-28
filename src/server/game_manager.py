@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import random
 import traceback
 from enum import Enum
 
@@ -33,6 +34,8 @@ class GameManager:
         self._mode: str = "auto"
         self._config: dict = {}
         self._error: str | None = None
+        self._perspective: str = "spectator"
+        self._human_player_id: int | None = None
 
     # ============================================================
     # 依赖注入
@@ -53,18 +56,40 @@ class GameManager:
         self._mode = mode
         self._config = config or {}
         self._error = None
+        self._human_player_id = None
+
+        # 确定视角
+        if mode == "god":
+            self._perspective = "god"
+        elif mode == "player":
+            self._perspective = "player_pending"  # 分配角色后更新
+        else:
+            self._perspective = "spectator"
 
         self._controller = GameController()
-        self._controller.init_game(mode, self._config)
+
+        # Player 模式：随机分配人类玩家 ID（1-12）
+        if mode == "player":
+            self._human_player_id = random.randint(1, 12)
+            self._perspective = f"player_{self._human_player_id}"
+
+        self._controller.init_game(mode, self._config, self._human_player_id)
 
         self._status = GameStatus.RUNNING
         self._task = asyncio.create_task(self._wrap_run())
 
-        return {
+        result = {
             "success": True,
             "mode": mode,
             "message": "游戏已启动",
         }
+        if self._human_player_id:
+            controller_state = self._controller.state
+            if controller_state:
+                human_p = controller_state.get_player(self._human_player_id)
+                result["human_player_id"] = self._human_player_id
+                result["human_role"] = human_p.role.value if human_p else "unknown"
+        return result
 
     async def stop_game(self) -> dict:
         """停止当前游戏。"""
@@ -109,6 +134,15 @@ class GameManager:
             return None
         return serialize_game_state(state, perspective)
 
+    def resolve_human_decision(self, decision: dict) -> None:
+        """转发人类决策到 GameController。"""
+        if self._controller:
+            self._controller.resolve_human_decision(decision)
+
+    def set_perspective(self, perspective: str) -> None:
+        """设置序列化视角（由 WebSocket 客户端请求）。"""
+        self._perspective = perspective
+
     # ============================================================
     # 内部
     # ============================================================
@@ -141,7 +175,15 @@ class GameManager:
             return
 
         state = self._controller.state if self._controller else None
-        snapshot = serialize_game_state(state, "spectator") if state else None
+
+        # Player 模式：如果人类玩家死亡，视角切换为 spectator
+        perspective = self._perspective
+        if self._mode == "player" and self._human_player_id and state:
+            human_p = state.get_player(self._human_player_id)
+            if human_p and not human_p.alive:
+                perspective = "spectator"
+
+        snapshot = serialize_game_state(state, perspective) if state else None
 
         await self._ws_manager.broadcast_with_state(event_type, data, snapshot)
 
@@ -152,7 +194,8 @@ class GameManager:
 
         state = self._controller.state if self._controller else None
         winner = state.winner.value if state and state.winner else "unknown"
-        snapshot = serialize_game_state(state, "spectator") if state else None
+        # 游戏结束时用 god 视角展示所有角色
+        snapshot = serialize_game_state(state, "god") if state else None
 
         async def _broadcast():
             await self._ws_manager.broadcast_with_state(

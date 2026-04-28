@@ -101,6 +101,10 @@ class WebSocketManager:
             await self._handle_stop_game(websocket)
         elif msg_type == "request_state":
             await self._handle_request_state(websocket)
+        elif msg_type in ("god_decision", "player_decision"):
+            await self._handle_human_decision(websocket, msg)
+        elif msg_type == "set_perspective":
+            await self._handle_set_perspective(websocket, msg)
         else:
             await self.send_to(websocket, {
                 "type": "error",
@@ -142,3 +146,18 @@ class WebSocketManager:
             "status": status,
             "state": state,
         })
+
+    async def _handle_human_decision(self, _websocket: WebSocket, msg: dict) -> None:
+        """God/Player 模式的人类决策。"""
+        gm = self._game_manager
+        if not gm:
+            return
+        gm.resolve_human_decision(msg)
+
+    async def _handle_set_perspective(self, _websocket: WebSocket, msg: dict) -> None:
+        """客户端请求切换视角。"""
+        gm = self._game_manager
+        if not gm:
+            return
+        perspective = msg.get("perspective", "spectator")
+        gm.set_perspective(perspective)

@@ -220,6 +220,50 @@ body {
 .log-entry.vote   { color: var(--orange); }
 .log-entry.night  { color: var(--purple); }
 
+/* --- Decision Panel --- */
+.decision-panel {
+  background: var(--panel); border-top: 1px solid rgba(255,255,255,0.06);
+  padding: 16px 24px; flex-shrink: 0;
+}
+.decision-header {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 12px;
+}
+.decision-header .label { font-weight: 700; color: var(--gold); font-size: 0.95rem; }
+.decision-header .info { font-size: 0.8rem; color: var(--text2); }
+.decision-targets {
+  display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px;
+}
+.decision-target-btn {
+  width: 44px; height: 44px; border-radius: 50%;
+  border: 2px solid var(--panel2); background: var(--panel);
+  color: var(--text); font-weight: 700; font-size: 0.9rem;
+  cursor: pointer; transition: var(--transition);
+}
+.decision-target-btn:hover { border-color: var(--green); background: rgba(74,222,128,0.08); }
+.decision-target-btn.selected { border-color: var(--green); background: rgba(74,222,128,0.15); box-shadow: 0 0 8px rgba(74,222,128,0.3); }
+.decision-target-btn.dead { opacity: 0.35; cursor: not-allowed; text-decoration: line-through; }
+.decision-target-btn.dead:hover { border-color: var(--panel2); background: var(--panel); }
+
+.decision-speech {
+  width: 100%; padding: 10px 12px; border-radius: 8px;
+  border: 1px solid var(--panel2); background: rgba(0,0,0,0.2);
+  color: var(--text); font-size: 0.9rem; outline: none;
+  resize: none; rows: 2; margin-bottom: 10px; font-family: inherit;
+}
+.decision-speech:focus { border-color: var(--green); }
+.decision-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.decision-actions .btn { padding: 8px 20px; font-size: 0.85rem; }
+
+/* Witch action buttons */
+.witch-actions { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
+.witch-action-btn {
+  padding: 10px 18px; border-radius: 8px; border: 2px solid var(--panel2);
+  background: var(--panel); color: var(--text); cursor: pointer;
+  font-weight: 600; font-size: 0.85rem; transition: var(--transition);
+}
+.witch-action-btn:hover { border-color: var(--green); }
+.witch-action-btn.selected { border-color: var(--green); background: rgba(74,222,128,0.12); }
+
 /* --- Game Over Overlay --- */
 .overlay {
   position: fixed; inset: 0; background: rgba(0,0,0,0.75);
@@ -284,21 +328,19 @@ body {
           <div class="mode-desc">全 AI 自动对决，实时观看游戏过程</div>
         </div>
       </div>
-      <div class="mode-option disabled" data-mode="god">
+      <div class="mode-option" data-mode="god">
         <div class="mode-icon" style="background:rgba(251,191,36,0.15);color:var(--gold);">&#x2606;</div>
         <div>
           <div class="mode-label">上帝模式</div>
           <div class="mode-desc">用户当上帝，操控游戏进程</div>
         </div>
-        <span class="mode-badge">开发中</span>
       </div>
-      <div class="mode-option disabled" data-mode="player">
+      <div class="mode-option" data-mode="player">
         <div class="mode-icon" style="background:rgba(96,165,250,0.15);color:var(--blue);">&#x263A;</div>
         <div>
           <div class="mode-label">玩家模式</div>
           <div class="mode-desc">以玩家身份参与，AI 为其余玩家</div>
         </div>
-        <span class="mode-badge">开发中</span>
       </div>
     </div>
     <div class="start-actions">
@@ -327,6 +369,25 @@ body {
   <!-- Player Grid -->
   <div class="player-grid-wrap">
     <div class="player-grid" id="player-grid"></div>
+  </div>
+
+  <!-- Decision Panel -->
+  <div class="decision-panel hidden" id="decision-panel">
+    <div class="decision-header">
+      <span class="label" id="decision-label"></span>
+      <span class="info" id="decision-info"></span>
+    </div>
+    <div class="witch-actions hidden" id="witch-actions">
+      <button class="witch-action-btn" data-witch="SAVE">使用解药</button>
+      <button class="witch-action-btn" data-witch="POISON">使用毒药</button>
+      <button class="witch-action-btn" data-witch="SKIP">跳过</button>
+    </div>
+    <div class="decision-targets" id="decision-targets"></div>
+    <textarea class="decision-speech" id="decision-speech" placeholder="发言内容（可选）..." rows="2"></textarea>
+    <div class="decision-actions">
+      <button class="btn btn-primary" id="decision-submit" onclick="submitDecision()">确认</button>
+      <button class="btn btn-ghost" id="decision-skip" onclick="submitSkip()">跳过</button>
+    </div>
   </div>
 
   <!-- Log Panel -->
@@ -375,6 +436,10 @@ const State = {
   gameState: null,
   ws: null,
   logEntries: [],
+  pendingDecision: null,  // { player_id, action_hint, context, valid_targets }
+  perspective: 'spectator',
+  humanPlayerId: null,
+  humanRole: null,
 };
 
 const WS_URL = `ws://${location.host}/ws`;
@@ -493,7 +558,12 @@ function updateUI(event, data) {
   switch (event) {
     case 'game_init':
       State.gameStatus = 'running';
+      State.humanPlayerId = data?.human_player_id || null;
+      State.humanRole = data?.human_role || null;
       switchView('game');
+      if (State.humanRole) {
+        appendLog('system', `你的身份是：${ROLE_LABEL[State.humanRole] || State.humanRole}`);
+      }
       break;
     case 'game_over':
       State.gameStatus = 'finished';
@@ -545,10 +615,14 @@ function updateUI(event, data) {
     case 'hunter_shoot':
       appendLog('death', `猎人开枪带走了 ${data.target} 号`);
       break;
+    case 'request_input':
+      showDecisionPanel(data);
+      return; // Don't re-render while waiting for input
   }
 
   // Always re-render from snapshot
   renderAll(State.gameState);
+  hideDecisionPanel();
 }
 
 /* ================================================================
@@ -709,11 +783,176 @@ function resetToStart() {
   State.gameStatus = 'idle';
   State.gameState = null;
   State.ws = null;
+  State.pendingDecision = null;
+  State.humanPlayerId = null;
+  State.humanRole = null;
+  State._selectedTarget = 0;
+  State._witchAction = null;
   _lastLogLen = 0;
   document.getElementById('log-panel').innerHTML = '';
   document.getElementById('game-over-overlay').classList.add('hidden');
   document.getElementById('player-grid').innerHTML = '';
+  hideDecisionPanel();
   switchView('start');
+}
+
+/* ================================================================
+   Decision Panel
+   ================================================================ */
+function showDecisionPanel(data) {
+  const panel = document.getElementById('decision-panel');
+  panel.classList.remove('hidden');
+  State.pendingDecision = data;
+
+  const playerId = data.player_id;
+  const actionHint = data.action_hint;
+  const role = data.role || 'unknown';
+
+  // Label
+  const label = document.getElementById('decision-label');
+  const roleLabel = ROLE_LABEL[role] || role;
+  const actionNames = {
+    KILL: '击杀目标', CHECK: '查验目标', POISON: '毒杀目标',
+    SHOOT: '开枪目标', VOTE: '放逐投票', VOTE_ELECTION: '警长投票',
+    GIVE_BADGE: '移交警徽', WITCH_ACTION: '女巫用药', SPEECH: '发言',
+    LAST_WORDS: '遗言',
+  };
+  const actionName = actionNames[actionHint] || actionHint;
+  label.textContent = `${playerId}号 (${roleLabel}) - ${actionName}`;
+
+  // Info
+  const info = document.getElementById('decision-info');
+  info.textContent = data.context?.phase ? `阶段: ${data.context.phase}` : '';
+
+  // Witch special
+  const witchDiv = document.getElementById('witch-actions');
+  const targetsDiv = document.getElementById('decision-targets');
+  const speechInput = document.getElementById('decision-speech');
+  const submitBtn = document.getElementById('decision-submit');
+  const skipBtn = document.getElementById('decision-skip');
+
+  if (actionHint === 'WITCH_ACTION') {
+    witchDiv.classList.remove('hidden');
+    targetsDiv.innerHTML = '';
+    speechInput.style.display = 'none';
+    // Reset witch buttons
+    document.querySelectorAll('.witch-action-btn').forEach(b => b.classList.remove('selected'));
+    // Show save/poison/context
+    const ctx = data.context || {};
+    if (!ctx.save_available) {
+      document.querySelector('[data-witch="SAVE"]').style.display = 'none';
+    } else {
+      document.querySelector('[data-witch="SAVE"]').style.display = '';
+    }
+    if (!ctx.poison_available) {
+      document.querySelector('[data-witch="POISON"]').style.display = 'none';
+    } else {
+      document.querySelector('[data-witch="POISON"]').style.display = '';
+    }
+    skipBtn.style.display = '';
+    submitBtn.style.display = 'none';
+  } else {
+    witchDiv.classList.add('hidden');
+    speechInput.style.display = '';
+    skipBtn.style.display = (actionHint === 'SPEECH' || actionHint === 'LAST_WORDS') ? 'none' : '';
+    submitBtn.style.display = '';
+
+    // Target buttons
+    let targetsHtml = '';
+    const validTargets = data.valid_targets || [];
+    const gameState = State.gameState;
+    if (actionHint === 'SPEECH' || actionHint === 'LAST_WORDS') {
+      // Speech: no targets needed, just text
+      targetsHtml = '';
+    } else {
+      for (const pid of validTargets) {
+        const player = gameState?.players?.find(p => p.player_id === pid);
+        const isDead = player && !player.alive;
+        targetsHtml += `<button class="decision-target-btn${isDead ? ' dead' : ''}" data-pid="${pid}" onclick="selectTarget(${pid}, this)">${pid}</button>`;
+      }
+    }
+    targetsDiv.innerHTML = targetsHtml;
+
+    // Clear previous selection
+    State._selectedTarget = 0;
+    State._witchAction = null;
+    speechInput.value = '';
+  }
+}
+
+function hideDecisionPanel() {
+  document.getElementById('decision-panel').classList.add('hidden');
+  State.pendingDecision = null;
+  State._selectedTarget = 0;
+  State._witchAction = null;
+}
+
+function selectTarget(pid, el) {
+  document.querySelectorAll('.decision-target-btn').forEach(b => b.classList.remove('selected'));
+  el.classList.add('selected');
+  State._selectedTarget = pid;
+}
+
+// Witch action selection
+document.addEventListener('click', function(e) {
+  if (e.target.classList.contains('witch-action-btn')) {
+    document.querySelectorAll('.witch-action-btn').forEach(b => b.classList.remove('selected'));
+    e.target.classList.add('selected');
+    State._witchAction = e.target.dataset.witch;
+
+    // Show target selector for poison
+    const targetsDiv = document.getElementById('decision-targets');
+    if (e.target.dataset.witch === 'POISON') {
+      const validTargets = State.pendingDecision?.valid_targets || [];
+      const gameState = State.gameState;
+      let html = '';
+      for (const pid of validTargets) {
+        const player = gameState?.players?.find(p => p.player_id === pid);
+        const isDead = player && !player.alive;
+        html += `<button class="decision-target-btn${isDead ? ' dead' : ''}" data-pid="${pid}" onclick="selectTarget(${pid}, this)">${pid}</button>`;
+      }
+      targetsDiv.innerHTML = html;
+    } else {
+      targetsDiv.innerHTML = '';
+      State._selectedTarget = 0;
+    }
+
+    // Auto-submit on SAVE or SKIP
+    if (e.target.dataset.witch === 'SAVE' || e.target.dataset.witch === 'SKIP') {
+      document.getElementById('decision-speech').style.display = 'none';
+      submitWitchDecision();
+    }
+  }
+});
+
+function submitWitchDecision() {
+  sendDecision(State._witchAction || 'SKIP', State._selectedTarget || 0);
+}
+
+function submitDecision() {
+  const actionHint = State.pendingDecision?.action_hint || '';
+  let action = actionHint;
+  if (actionHint === 'SPEECH' || actionHint === 'LAST_WORDS') {
+    action = 'SPEECH';
+  }
+  const targetId = State._selectedTarget || 0;
+  sendDecision(action, targetId);
+}
+
+function submitSkip() {
+  sendDecision('SKIP', 0);
+}
+
+function sendDecision(action, targetId) {
+  const speech = document.getElementById('decision-speech').value.trim() || '';
+  const decision = {
+    type: State.mode === 'god' ? 'god_decision' : 'player_decision',
+    action: action,
+    target_id: targetId,
+    speech: speech,
+  };
+  sendCommand(decision);
+  hideDecisionPanel();
 }
 
 /* ================================================================
@@ -731,12 +970,32 @@ async function startGame() {
   _lastLogLen = 0;
   State.mode = result.mode;
   State.gameStatus = 'running';
+  State.humanPlayerId = result.human_player_id || null;
+  State.humanRole = result.human_role || null;
+  State.pendingDecision = null;
+
+  // 设置视角
+  if (State.mode === 'god') {
+    State.perspective = 'god';
+  } else if (State.mode === 'player' && State.humanPlayerId) {
+    State.perspective = `player_${State.humanPlayerId}`;
+  } else {
+    State.perspective = 'spectator';
+  }
+
   switchView('game');
   document.getElementById('log-panel').innerHTML = '';
   document.getElementById('player-grid').innerHTML = '';
+  hideDecisionPanel();
   appendLog('system', '游戏启动中...');
 
   connectWebSocket();
+
+  // 连接后发送视角设置
+  setTimeout(() => {
+    sendCommand({ type: 'set_perspective', perspective: State.perspective });
+  }, 200);
+
   document.getElementById('btn-start').textContent = '游戏运行中...';
   document.getElementById('btn-start').disabled = true;
 }
@@ -758,7 +1017,7 @@ async function stopGame() {
   switchView('start');
 
   // Mode selection
-  document.querySelectorAll('.mode-option:not(.disabled)').forEach(el => {
+  document.querySelectorAll('.mode-option').forEach(el => {
     el.addEventListener('click', () => {
       document.querySelectorAll('.mode-option').forEach(o => o.classList.remove('selected'));
       el.classList.add('selected');

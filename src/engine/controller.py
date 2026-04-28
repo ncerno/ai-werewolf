@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import random
 import re
 from typing import Awaitable, Callable, Optional
@@ -56,12 +57,16 @@ class GameController:
         self._mode: str = "auto"
         self._agents: dict[int, object] = {}   # {player_id: PlayerAgent}
         self._config: dict = {}
+        self._human_input_event = asyncio.Event()
+        self._human_decision: dict | None = None
+        self._human_player_id: int | None = None
 
     # ============================================================
     # 游戏生命周期
     # ============================================================
 
-    def init_game(self, mode: str = "auto", config: dict | None = None):
+    def init_game(self, mode: str = "auto", config: dict | None = None,
+                  human_player_id: int | None = None):
         """初始化新游戏。"""
         from ..agent.player import PlayerAgent
         from ..utils.config import get_llm_config_for_role
@@ -70,8 +75,11 @@ class GameController:
         self.state = GameState(players=players)
         self._mode = mode
         self._config = config or {}
+        self._human_player_id = human_player_id
+        self._human_decision = None
+        self._human_input_event.clear()
 
-        # 为每个玩家创建 PlayerAgent
+        # 为每个玩家创建 PlayerAgent（human player 也需要 agent 用于 spectator）
         for player in players:
             role_str = player.role.value
             model_config = get_llm_config_for_role(role_str, self._config)
@@ -86,7 +94,12 @@ class GameController:
                 f"[系统] 你的狼队友是：{'、'.join(f'{t}号' for t in teammates)}"
             )
 
-        self._emit("game_init", {"mode": mode, "players": len(players)})
+        init_data = {"mode": mode, "players": len(players)}
+        if human_player_id:
+            human_p = self.state.get_player(human_player_id)
+            init_data["human_player_id"] = human_player_id
+            init_data["human_role"] = human_p.role.value if human_p else "unknown"
+        self._emit("game_init", init_data)
 
     async def run(self, event_callback: EventCallback = None) -> Faction:
         """主循环：运行游戏直到结束。返回获胜阵营。"""
@@ -157,7 +170,7 @@ class GameController:
 
         wolf_votes = {}
         for wolf in alive_wolves:
-            result = await self._ask_llm(wolf.player_id, "KILL", {
+            result = await self._get_decision(wolf.player_id, "KILL", {
                 "phase": "NIGHT_WOLF",
                 "alive_wolves": [w.player_id for w in alive_wolves],
             })
@@ -189,7 +202,7 @@ class GameController:
 
         # 用药决策
         if witch.witch_save_available or witch.witch_poison_available:
-            result = await self._ask_llm(witch.player_id, "WITCH_ACTION", {
+            result = await self._get_decision(witch.player_id, "WITCH_ACTION", {
                 "phase": "NIGHT_WITCH",
                 "dead_player": dead_id,
                 "save_available": witch.witch_save_available,
@@ -231,7 +244,7 @@ class GameController:
             return
         seer = seer_list[0]
 
-        result = await self._ask_llm(seer.player_id, "CHECK", {"phase": "NIGHT_SEER"})
+        result = await self._get_decision(seer.player_id, "CHECK", {"phase": "NIGHT_SEER"})
 
         if result.action == "CHECK" and result.target_id > 0:
             valid, _ = validate_action(state, seer.player_id, "CHECK", result.target_id)
@@ -354,7 +367,7 @@ class GameController:
 
         for player in state.players:
             if not player.alive:
-                speech = await self._ask_llm_speech(player.player_id, {
+                speech = await self._get_speech(player.player_id, {
                     "phase": "LAST_WORDS",
                     "note": "你在昨夜死亡，这是你的遗言",
                 })
@@ -384,7 +397,7 @@ class GameController:
         voters = [p for p in state.get_alive_players() if p.player_id not in candidates]
         votes = {}
         for voter in voters:
-            result = await self._ask_llm(voter.player_id, "VOTE_ELECTION", {
+            result = await self._get_decision(voter.player_id, "VOTE_ELECTION", {
                 "candidates": candidates,
             })
             if result.target_id and result.target_id in candidates:
@@ -420,7 +433,7 @@ class GameController:
             state.current_speaker = speaker_id
             self._emit("speech_turn", {"player_id": speaker_id})
 
-            speech = await self._ask_llm_speech(speaker_id, {
+            speech = await self._get_speech(speaker_id, {
                 "phase": "DAY_SPEECH",
                 "turn": state.turn,
             })
@@ -437,7 +450,7 @@ class GameController:
         self._broadcast_to_agents("投票开始，请选择你要放逐的玩家。")
 
         for voter in voters:
-            result = await self._ask_llm(voter.player_id, "VOTE", {})
+            result = await self._get_decision(voter.player_id, "VOTE", {})
             if result.target_id:
                 votes[voter.player_id] = result.target_id
 
@@ -457,7 +470,7 @@ class GameController:
             for pid in state.pk_candidates:
                 state.current_speaker = pid
                 self._emit("speech_turn", {"player_id": pid, "pk": True})
-                speech = await self._ask_llm_speech(pid, {
+                speech = await self._get_speech(pid, {
                     "phase": "DAY_PK_SPEECH",
                 })
                 if speech:
@@ -469,7 +482,7 @@ class GameController:
             pk_voters = [v for v in voters if v.player_id not in state.pk_candidates]
             pk_votes = {}
             for voter in pk_voters:
-                result = await self._ask_llm(voter.player_id, "VOTE", {
+                result = await self._get_decision(voter.player_id, "VOTE", {
                     "pk_candidates": state.pk_candidates,
                 })
                 if result.target_id and result.target_id in state.pk_candidates:
@@ -502,7 +515,7 @@ class GameController:
 
             # 猎人开枪
             if eliminated_player.role == Role.HUNTER and eliminated_player.hunter_can_shoot:
-                result = await self._ask_llm(eliminated, "SHOOT", {
+                result = await self._get_decision(eliminated, "SHOOT", {
                     "phase": "HUNTER_DEATH",
                 })
                 if result.action == "SHOOT" and result.target_id > 0:
@@ -514,7 +527,7 @@ class GameController:
 
             # 警长移交
             if eliminated == state.sheriff_id:
-                result = await self._ask_llm(eliminated, "GIVE_BADGE", {})
+                result = await self._get_decision(eliminated, "GIVE_BADGE", {})
                 if result.action == "GIVE_BADGE" and result.target_id > 0:
                     target = state.get_player(result.target_id)
                     if target and target.alive:
@@ -573,3 +586,97 @@ class GameController:
         """触发事件回调。通过 asyncio.create_task 异步推送，不阻塞游戏主循环。"""
         if self._event_callback:
             asyncio.create_task(self._event_callback(event_type, data))
+
+    # ============================================================
+    # 人类输入（God 模式 / Player 模式）
+    # ============================================================
+
+    def resolve_human_decision(self, decision: dict) -> None:
+        """接收人类决策，唤醒暂停的游戏循环。"""
+        self._human_decision = decision
+        self._human_input_event.set()
+
+    async def _get_decision(self, player_id: int, action_hint: str, context: dict):
+        """获取决策：God/Player 模式等人类输入，auto 模式调 LLM。"""
+        if self._mode == "god":
+            return await self._wait_for_human(player_id, action_hint, context)
+        elif self._mode == "player" and player_id == self._human_player_id:
+            return await self._wait_for_human(player_id, action_hint, context)
+        else:
+            return await self._ask_llm(player_id, action_hint, context)
+
+    async def _get_speech(self, player_id: int, context: dict) -> str:
+        """获取发言：God/Player 模式等人类输入，auto 模式调 LLM。"""
+        if self._mode == "god":
+            result = await self._wait_for_human(player_id, "SPEECH", context)
+            return result.speech or ""
+        elif self._mode == "player" and player_id == self._human_player_id:
+            result = await self._wait_for_human(player_id, "SPEECH", context)
+            return result.speech or ""
+        else:
+            return await self._ask_llm_speech(player_id, context)
+
+    async def _wait_for_human(self, player_id: int, action_hint: str,
+                              context: dict):
+        """暂停游戏循环，等待人类通过 WebSocket 发送决策。"""
+        from ..agent.parser import ActionResult
+
+        state = self.state
+        valid_targets = self._compute_valid_targets(player_id, action_hint, context)
+
+        role_str = "unknown"
+        player = state.get_player(player_id)
+        if player:
+            role_str = player.role.value
+
+        self._emit("request_input", {
+            "player_id": player_id,
+            "action_hint": action_hint,
+            "context": context,
+            "valid_targets": valid_targets,
+            "role": role_str,
+        })
+
+        self._human_input_event.clear()
+        await self._human_input_event.wait()
+
+        decision = self._human_decision or {}
+        self._human_decision = None
+
+        action = decision.get("action", action_hint if action_hint != "SPEECH" else "SKIP")
+        target_id = decision.get("target_id", 0)
+        if isinstance(target_id, str):
+            try:
+                target_id = int(target_id)
+            except ValueError:
+                target_id = 0
+
+        return ActionResult(
+            action=action,
+            target_id=target_id,
+            speech=decision.get("speech", ""),
+            raw_response=json.dumps(decision),
+        )
+
+    def _compute_valid_targets(self, player_id: int, action_hint: str,
+                                context: dict) -> list[int]:
+        """根据行动类型计算可选目标列表。"""
+        state = self.state
+        if action_hint in ("KILL", "CHECK", "POISON", "SHOOT"):
+            return [p.player_id for p in state.get_alive_players()
+                    if p.player_id != player_id]
+        elif action_hint == "VOTE":
+            pk = context.get("pk_candidates", [])
+            if pk:
+                return pk
+            return state.get_alive_ids()
+        elif action_hint == "VOTE_ELECTION":
+            return context.get("candidates", [])
+        elif action_hint == "GIVE_BADGE":
+            return [p.player_id for p in state.get_alive_players()
+                    if p.player_id != player_id]
+        elif action_hint in ("SPEECH", "LAST_WORDS"):
+            return []
+        elif action_hint == "WITCH_ACTION":
+            return state.get_alive_ids()
+        return state.get_alive_ids()
