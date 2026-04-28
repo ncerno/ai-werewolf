@@ -128,6 +128,8 @@ class PlayerAgent:
             ])
             summary = summary_response.strip()
         except Exception:
+            import traceback
+            traceback.print_exc()
             summary = f"（历史记录过长，已省略 {len(old_messages)} 条消息）"
 
         self.memory = [

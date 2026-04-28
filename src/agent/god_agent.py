@@ -62,6 +62,8 @@ class GodAgent:
             )
             return response.choices[0].message.content or base
         except Exception:
+            import traceback
+            traceback.print_exc()
             return base
 
     async def prompt_human_action(self, prompt_type: str, context: dict) -> str:
@@ -107,6 +109,8 @@ class GodAgent:
             )
             return response.choices[0].message.content or prompt
         except Exception:
+            import traceback
+            traceback.print_exc()
             return f"游戏开始！你是 {player_id} 号玩家，你的身份是 **{role_name}**。祝你好运！"
 
     # ============================================================

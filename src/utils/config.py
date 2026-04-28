@@ -1,5 +1,6 @@
 """配置加载器：从 YAML 文件和环境变量加载配置。"""
 import os
+import sys
 import json
 from pathlib import Path
 from typing import Any
@@ -15,8 +16,17 @@ USER_CONFIG_PATH = PROJECT_ROOT / "data" / "user_config.json"
 
 
 def _load_yaml(path: Path) -> dict:
-    with open(path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f) or {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return yaml.safe_load(f) or {}
+    except FileNotFoundError:
+        print(f"[FATAL] 配置文件不存在: {path}", file=sys.stderr)
+        print("  请确保 config/default.yaml 存在。可从 config/default.yaml.example 复制。", file=sys.stderr)
+        sys.exit(1)
+    except yaml.YAMLError as e:
+        print(f"[FATAL] 配置文件格式错误: {path}", file=sys.stderr)
+        print(f"  {e}", file=sys.stderr)
+        sys.exit(1)
 
 
 def _load_json(path: Path) -> dict:
