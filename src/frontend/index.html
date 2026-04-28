@@ -108,7 +108,14 @@ body {
 }
 .status-info span { white-space: nowrap; }
 .status-info .val { color: var(--text); font-weight: 600; }
-.status-actions { margin-left: auto; display: flex; gap: 8px; }
+.status-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.status-dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--grey); transition: background 0.3s;
+  flex-shrink: 0;
+}
+.status-dot.connected { background: var(--green); box-shadow: 0 0 6px rgba(74,222,128,0.5); }
+.status-dot.disconnected { background: var(--red); box-shadow: 0 0 6px rgba(239,68,68,0.5); }
 
 /* --- Player Grid --- */
 .player-grid-wrap {
@@ -362,6 +369,7 @@ body {
       <span>存活 <span class="val" id="status-alive">12</span></span>
     </div>
     <div class="status-actions">
+      <span class="status-dot" id="status-dot" title="连接状态"></span>
       <button class="btn btn-danger" style="padding:6px 16px;font-size:0.8rem;" onclick="stopGame()">停止</button>
     </div>
   </div>
@@ -502,6 +510,7 @@ function connectWebSocket() {
   State.ws = ws;
 
   ws.onopen = () => {
+    setConnectionStatus(true);
     appendLog('system', '已连接到服务器');
   };
 
@@ -515,6 +524,7 @@ function connectWebSocket() {
   };
 
   ws.onclose = () => {
+    setConnectionStatus(false);
     if (State.gameStatus === 'running') {
       appendLog('system', 'WebSocket 断开，尝试重连...');
       setTimeout(connectWebSocket, 3000);
@@ -522,8 +532,16 @@ function connectWebSocket() {
   };
 
   ws.onerror = () => {
-    // onclose will fire after this
+    setConnectionStatus(false);
   };
+}
+
+function setConnectionStatus(connected) {
+  const dot = document.getElementById('status-dot');
+  if (!dot) return;
+  dot.classList.toggle('connected', connected);
+  dot.classList.toggle('disconnected', !connected);
+  dot.title = connected ? '已连接' : '连接断开';
 }
 
 function sendCommand(cmd) {
