@@ -570,5 +570,6 @@ class GameController:
             await agent.summarize()
 
     def _emit(self, event_type: str, data: dict):
-        """触发事件回调。后续由 WebSocket 层拉取。"""
-        pass
+        """触发事件回调。通过 asyncio.create_task 异步推送，不阻塞游戏主循环。"""
+        if self._event_callback:
+            asyncio.create_task(self._event_callback(event_type, data))
