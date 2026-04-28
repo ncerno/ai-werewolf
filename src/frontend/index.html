@@ -1,31 +1,440 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI 狼人杀</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            background: #1a1a2e;
-            color: #e0e0e0;
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        .container { text-align: center; }
-        h1 { font-size: 2.5rem; margin-bottom: 0.5rem; }
-        .subtitle { color: #888; margin-bottom: 2rem; }
-        .status { color: #4ade80; }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI 狼人杀</title>
+<style>
+:root {
+  --bg: #1a1a2e;
+  --panel: #16213e;
+  --panel2: #0f3460;
+  --green: #4ade80;
+  --red: #ef4444;
+  --gold: #fbbf24;
+  --blue: #60a5fa;
+  --purple: #a78bfa;
+  --orange: #fb923c;
+  --grey: #6b7280;
+  --text: #e0e0e0;
+  --text2: #9ca3af;
+  --radius: 12px;
+  --transition: 0.2s ease;
+}
+*, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+.hidden { display: none !important; }
+.btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 12px 32px; border: none; border-radius: 8px;
+  font-size: 1rem; cursor: pointer; transition: var(--transition);
+  font-weight: 600;
+}
+.btn-primary { background: var(--green); color: #000; }
+.btn-primary:hover { filter: brightness(1.1); }
+.btn-danger { background: var(--red); color: #fff; }
+.btn-danger:hover { filter: brightness(1.1); }
+.btn-ghost { background: transparent; border: 1px solid var(--grey); color: var(--text); }
+.btn-ghost:hover { border-color: var(--text); }
+#view-start {
+  display: flex; align-items: center; justify-content: center; min-height: 100vh;
+}
+.start-card {
+  background: var(--panel); border-radius: 16px; padding: 48px;
+  text-align: center; max-width: 520px; width: 90%;
+}
+.start-card h1 { font-size: 2.2rem; margin-bottom: 4px; }
+.start-card .subtitle { color: var(--text2); margin-bottom: 32px; font-size: 0.95rem; }
+.mode-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 28px; }
+.mode-option {
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px 18px; border-radius: 10px;
+  border: 2px solid transparent; cursor: pointer;
+  background: rgba(255,255,255,0.04); transition: var(--transition); text-align: left;
+}
+.mode-option:hover { background: rgba(255,255,255,0.08); }
+.mode-option.selected { border-color: var(--green); background: rgba(74,222,128,0.08); }
+.mode-option.disabled { opacity: 0.45; cursor: not-allowed; }
+.mode-option.disabled:hover { background: rgba(255,255,255,0.04); }
+.mode-option .mode-icon {
+  width: 40px; height: 40px; border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1.2rem; flex-shrink: 0;
+}
+.mode-option .mode-label { font-weight: 600; }
+.mode-option .mode-desc { font-size: 0.82rem; color: var(--text2); margin-top: 2px; }
+.mode-option .mode-badge {
+  margin-left: auto; font-size: 0.72rem;
+  background: var(--grey); color: #fff; padding: 2px 8px; border-radius: 10px;
+}
+.start-actions { display: flex; gap: 10px; justify-content: center; }
+#view-game { display: flex; flex-direction: column; min-height: 100vh; }
+.status-bar {
+  display: flex; align-items: center; gap: 20px;
+  padding: 12px 24px; background: var(--panel); border-bottom: 1px solid rgba(255,255,255,0.06);
+  flex-shrink: 0; flex-wrap: wrap;
+}
+.status-phase { font-weight: 700; font-size: 1.05rem; color: var(--gold); min-width: 100px; }
+.status-info { display: flex; gap: 16px; font-size: 0.85rem; color: var(--text2); }
+.status-info span { white-space: nowrap; }
+.status-info .val { color: var(--text); font-weight: 600; }
+.status-actions { margin-left: auto; display: flex; gap: 8px; }
+.player-grid-wrap {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  padding: 24px; overflow-y: auto;
+}
+.player-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px 24px; max-width: 700px; }
+.player-card {
+  position: relative; width: 120px; height: 120px;
+  border-radius: 50%; display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  background: var(--panel); border: 3px solid var(--panel2);
+  transition: border-color 0.3s, box-shadow 0.3s, background 0.3s;
+  user-select: none;
+}
+.player-card.alive { border-color: rgba(74,222,128,0.5); }
+.player-card.alive:hover { border-color: var(--green); }
+.player-card.dead { border-color: var(--red); background: #1a1020; opacity: 0.6; }
+.player-card.speaking {
+  border-color: var(--blue) !important;
+  box-shadow: 0 0 18px rgba(96,165,250,0.5);
+  animation: pulse-blue 1.2s ease-in-out infinite;
+}
+.player-card.sheriff { border-color: var(--gold); }
+.player-card.sheriff.alive { box-shadow: 0 0 12px rgba(251,191,36,0.3); }
+@keyframes pulse-blue {
+  0%, 100% { box-shadow: 0 0 8px rgba(96,165,250,0.3); }
+  50% { box-shadow: 0 0 22px rgba(96,165,250,0.6); }
+}
+.player-number { font-size: 2rem; font-weight: 800; line-height: 1; }
+.player-card.alive .player-number { color: var(--text); }
+.player-card.dead .player-number { color: var(--grey); text-decoration: line-through; }
+.player-role-tag {
+  margin-top: 4px; padding: 2px 10px; border-radius: 8px;
+  font-size: 0.78rem; font-weight: 700; letter-spacing: 0.5px;
+}
+.player-card.alive .player-role-tag {
+  background: transparent; color: var(--text2); border: 1px dashed var(--grey);
+}
+.player-card.dead .player-role-tag { border: none; }
+.role-werewolf { background: #dc2626; color: #fff; }
+.role-seer     { background: #7c3aed; color: #fff; }
+.role-witch    { background: #059669; color: #fff; }
+.role-hunter   { background: #ea580c; color: #fff; }
+.role-fool     { background: #4b5563; color: #fff; }
+.role-villager { background: #2563eb; color: #fff; }
+.sheriff-star {
+  position: absolute; top: -8px; left: 50%; transform: translateX(-50%);
+  width: 0; height: 0;
+  border-left: 9px solid transparent;
+  border-right: 9px solid transparent;
+  border-bottom: 16px solid var(--gold);
+  filter: drop-shadow(0 0 3px rgba(251,191,36,0.5));
+}
+.sheriff-star::after {
+  content: ''; position: absolute; top: 6px; left: -9px;
+  width: 0; height: 0;
+  border-left: 9px solid transparent;
+  border-right: 9px solid transparent;
+  border-top: 16px solid var(--gold);
+}
+.death-cross {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
+  width: 80px; height: 3px; background: var(--red); border-radius: 2px;
+  opacity: 0.7; pointer-events: none;
+  display: flex; align-items: center; justify-content: center;
+}
+.player-card.dead .death-cross:nth-child(2) { transform: translate(-50%,-50%) rotate(45deg); }
+.player-card.dead .death-cross:nth-child(3) { transform: translate(-50%,-50%) rotate(-45deg); }
+.no-vote-marker {
+  position: absolute; bottom: 8px; font-size: 0.65rem;
+  color: var(--grey); letter-spacing: 1px;
+}
+.log-panel {
+  height: 240px; overflow-y: auto; background: var(--panel);
+  border-top: 1px solid rgba(255,255,255,0.06);
+  padding: 12px 20px; flex-shrink: 0;
+  font-size: 0.85rem; line-height: 1.7;
+}
+.log-entry { padding: 2px 0; border-bottom: 1px solid rgba(255,255,255,0.03); }
+.log-entry.system { color: var(--grey); }
+.log-entry.speech { color: var(--text); }
+.log-entry.death  { color: var(--red); }
+.log-entry.vote   { color: var(--orange); }
+.log-entry.night  { color: var(--purple); }
+.overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.75);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 100;
+}
+.overlay-card {
+  background: var(--panel); border-radius: 16px; padding: 48px;
+  text-align: center; max-width: 400px; width: 90%;
+}
+.overlay-card h2 { font-size: 1.8rem; margin-bottom: 8px; }
+.overlay-card .winner-icon { font-size: 3rem; margin-bottom: 12px; }
+.overlay-card .winner-text { font-size: 1.1rem; color: var(--text2); margin-bottom: 24px; }
+#view-settings {
+  position: fixed; top: 0; right: 0; width: 360px; height: 100vh;
+  background: var(--panel); border-left: 1px solid rgba(255,255,255,0.08);
+  padding: 24px; z-index: 50; overflow-y: auto;
+  transition: transform 0.25s ease;
+}
+#view-settings.collapsed { transform: translateX(100%); }
+.settings-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
+.settings-header h3 { font-size: 1.1rem; }
+.settings-field { margin-bottom: 14px; }
+.settings-field label { display: block; font-size: 0.82rem; color: var(--text2); margin-bottom: 4px; }
+.settings-field input {
+  width: 100%; padding: 10px 12px; border-radius: 6px;
+  border: 1px solid var(--panel2); background: rgba(0,0,0,0.2);
+  color: var(--text); font-size: 0.9rem; outline: none;
+}
+.settings-field input:focus { border-color: var(--green); }
+.settings-toggle {
+  position: fixed; top: 16px; right: 16px; z-index: 51;
+  width: 38px; height: 38px; border-radius: 50%;
+  background: var(--panel); border: 1px solid rgba(255,255,255,0.12);
+  color: var(--text); cursor: pointer; font-size: 1.1rem;
+  display: flex; align-items: center; justify-content: center;
+  transition: var(--transition);
+}
+.settings-toggle:hover { border-color: var(--text); }
+</style>
 </head>
 <body>
-    <div class="container">
-        <h1>🐺 AI 狼人杀</h1>
-        <p class="subtitle">12 人局 · 全 LLM Agent 模拟器</p>
-        <p class="status">● 服务运行中</p>
+<div id="view-start">
+  <div class="start-card">
+    <h1>AI 狼人杀</h1>
+    <p class="subtitle">12 人局 &middot; 全 LLM Agent 模拟器</p>
+    <div class="mode-list">
+      <div class="mode-option selected" data-mode="auto">
+        <div class="mode-icon" style="background:rgba(74,222,128,0.15);color:var(--green);">&#x25B6;</div>
+        <div>
+          <div class="mode-label">旁观模式</div>
+          <div class="mode-desc">全 AI 自动对决，实时观看游戏过程</div>
+        </div>
+      </div>
+      <div class="mode-option disabled" data-mode="god">
+        <div class="mode-icon" style="background:rgba(251,191,36,0.15);color:var(--gold);">&#x2606;</div>
+        <div>
+          <div class="mode-label">上帝模式</div>
+          <div class="mode-desc">用户当上帝，操控游戏进程</div>
+        </div>
+        <span class="mode-badge">开发中</span>
+      </div>
+      <div class="mode-option disabled" data-mode="player">
+        <div class="mode-icon" style="background:rgba(96,165,250,0.15);color:var(--blue);">&#x263A;</div>
+        <div>
+          <div class="mode-label">玩家模式</div>
+          <div class="mode-desc">以玩家身份参与，AI 为其余玩家</div>
+        </div>
+        <span class="mode-badge">开发中</span>
+      </div>
     </div>
+    <div class="start-actions">
+      <button class="btn btn-primary" id="btn-start" onclick="startGame()">开始游戏</button>
+      <button class="btn btn-ghost" onclick="toggleSettings()">设置</button>
+    </div>
+  </div>
+</div>
+<div id="view-game" class="hidden">
+  <div class="status-bar">
+    <div class="status-phase" id="status-phase">等待中...</div>
+    <div class="status-info">
+      <span>回合 <span class="val" id="status-turn">0</span></span>
+      <span>存活 <span class="val" id="status-alive">12</span></span>
+    </div>
+    <div class="status-actions">
+      <button class="btn btn-danger" style="padding:6px 16px;font-size:0.8rem;" onclick="stopGame()">停止</button>
+    </div>
+  </div>
+  <div class="player-grid-wrap">
+    <div class="player-grid" id="player-grid"></div>
+  </div>
+  <div class="log-panel" id="log-panel"></div>
+  <div class="overlay hidden" id="game-over-overlay">
+    <div class="overlay-card">
+      <div class="winner-icon" id="winner-icon"></div>
+      <h2 id="winner-title"></h2>
+      <p class="winner-text" id="winner-sub"></p>
+      <button class="btn btn-primary" onclick="resetToStart()">返回首页</button>
+    </div>
+  </div>
+</div>
+<div id="view-settings" class="collapsed">
+  <div class="settings-header">
+    <h3>设置</h3>
+    <button class="btn btn-ghost" style="padding:4px 12px;font-size:0.8rem;" onclick="toggleSettings()">关闭</button>
+  </div>
+  <div class="settings-field">
+    <label>API Key (DeepSeek / OpenAI 兼容)</label>
+    <input type="password" id="setting-apikey" placeholder="sk-..." onchange="saveApiKey()">
+  </div>
+  <p style="color:var(--text2);font-size:0.75rem;margin-top:8px;">设置保存在本地浏览器中，不会上传到服务器。</p>
+</div>
+<button class="settings-toggle hidden" id="settings-toggle-btn" onclick="toggleSettings()" title="设置">&#x2699;</button>
+<script>
+const State = { view: 'start', gameStatus: 'idle', mode: 'auto', gameState: null, ws: null, logEntries: [] };
+const WS_URL = `ws://${location.host}/ws`;
+function switchView(name) {
+  State.view = name;
+  document.getElementById('view-start').classList.toggle('hidden', name !== 'start');
+  document.getElementById('view-game').classList.toggle('hidden', name !== 'game');
+  document.getElementById('settings-toggle-btn').classList.toggle('hidden', name === 'start');
+}
+function toggleSettings() { document.getElementById('view-settings').classList.toggle('collapsed'); }
+function saveApiKey() {
+  const val = document.getElementById('setting-apikey').value.trim();
+  if (val) localStorage.setItem('werewolf_apikey', val);
+}
+(function() { const s = localStorage.getItem('werewolf_apikey'); if (s) document.getElementById('setting-apikey').value = s; })();
+async function apiStartGame() {
+  const r = await fetch('/api/game/start', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({mode:State.mode}) });
+  return r.json();
+}
+async function apiStopGame() {
+  const r = await fetch('/api/game/stop', { method:'POST', headers:{'Content-Type':'application/json'} });
+  return r.json();
+}
+function connectWebSocket() {
+  if (State.ws && State.ws.readyState === WebSocket.OPEN) return;
+  const ws = new WebSocket(WS_URL); State.ws = ws;
+  ws.onopen = () => { appendLog('system', '已连接到服务器'); };
+  ws.onmessage = (ev) => { try { handleMessage(JSON.parse(ev.data)); } catch(e) {} };
+  ws.onclose = () => { if (State.gameStatus === 'running') { appendLog('system', 'WebSocket 断开，尝试重连...'); setTimeout(connectWebSocket, 3000); } };
+  ws.onerror = () => {};
+}
+function sendCommand(cmd) { if (State.ws && State.ws.readyState === WebSocket.OPEN) State.ws.send(JSON.stringify(cmd)); }
+function handleMessage(msg) {
+  const { type, event, data, state_snapshot } = msg;
+  if (type === 'game_event' && state_snapshot) { State.gameState = state_snapshot; updateUI(event, data); }
+  else if (type === 'game_state') { State.gameState = msg.state; State.gameStatus = msg.status?.status || 'idle'; renderAll(msg.state); }
+  else if (type === 'system') { appendLog('system', data?.message || JSON.stringify(data)); }
+  else if (type === 'error') { appendLog('system', '错误: ' + msg.message); }
+}
+function updateUI(event, data) {
+  if (!State.gameState) return;
+  switch (event) {
+    case 'game_init': State.gameStatus = 'running'; switchView('game'); break;
+    case 'game_over': State.gameStatus = 'finished'; showGameOver(data?.winner || State.gameState.winner); break;
+    case 'night_start': appendLog('night', '--- 第 ' + data.turn + ' 夜 ---'); break;
+    case 'wolf_action': if (data.decision === 'SKIP') appendLog('night', '狼人选择空刀'); else if (data.target) appendLog('night', '狼人决定击杀 ' + data.target + ' 号'); break;
+    case 'day_announce': if (data.peaceful) appendLog('system', '天亮了，昨夜是平安夜'); else if (data.deaths?.length) data.deaths.forEach(function(p) { appendLog('death', p + ' 号玩家昨夜死亡'); }); break;
+    case 'election_start': appendLog('system', '警长竞选开始，候选人: ' + (data.candidates||[]).map(function(c){return c+'号'}).join('、')); break;
+    case 'election': if (data.sheriff_id) appendLog('vote', data.sheriff_id + ' 号当选警长'); else appendLog('system', '警长竞选平票，本局无警长'); break;
+    case 'vote_tie': appendLog('vote', '投票平票！PK 候选人: ' + (data.tied_players||[]).map(function(c){return c+'号'}).join('、')); break;
+    case 'vote_result': if (data.eliminated) appendLog('vote', data.eliminated + ' 号被投票放逐'); else appendLog('vote', 'PK 投票仍平票，无人被放逐'); break;
+    case 'fool_revealed': appendLog('system', data.player_id + ' 号翻牌为白痴，免死但丧失投票权'); break;
+    case 'hunter_shoot': appendLog('death', '猎人开枪带走了 ' + data.target + ' 号'); break;
+  }
+  renderAll(State.gameState);
+}
+function renderAll(s) {
+  if (!s) return;
+  document.getElementById('status-phase').textContent = s.phase_name || s.phase || '';
+  document.getElementById('status-turn').textContent = s.turn || 0;
+  document.getElementById('status-alive').textContent = s.alive_count ?? 0;
+  updatePlayerGrid(s.players);
+  updateCurrentSpeaker(s.current_speaker);
+  syncLogs(s.public_log || []);
+}
+var ROLE_CLASS = { werewolf:'role-werewolf', seer:'role-seer', witch:'role-witch', hunter:'role-hunter', fool:'role-fool', villager:'role-villager', unknown:'' };
+var ROLE_LABEL = { werewolf:'狼', seer:'预', witch:'巫', hunter:'猎', fool:'痴', villager:'民', unknown:'?' };
+function updatePlayerGrid(players) {
+  var g = document.getElementById('player-grid'), h = '';
+  for (var i = 0; i < players.length; i++) {
+    var p = players[i], alive = p.alive, isS = p.is_sheriff, role = p.role || 'unknown';
+    var cls = ['player-card', alive?'alive':'dead', isS?'sheriff':''].filter(Boolean).join(' ');
+    h += '<div class="' + cls + '" data-pid="' + p.player_id + '">';
+    if (isS) h += '<div class="sheriff-star"></div>';
+    h += '<div class="player-number">' + p.player_id + '</div>';
+    h += '<div class="player-role-tag ' + (ROLE_CLASS[role]||'') + '">' + (ROLE_LABEL[role]||'?') + '</div>';
+    if (!alive) h += '<div class="death-cross"></div><div class="death-cross"></div>';
+    if (alive && !p.has_vote) h += '<div class="no-vote-marker">无票权</div>';
+    h += '</div>';
+  }
+  g.innerHTML = h;
+}
+function updateCurrentSpeaker(sid) {
+  document.querySelectorAll('.player-card').forEach(function(el) { el.classList.toggle('speaking', parseInt(el.dataset.pid) === sid); });
+}
+var _lastLogLen = 0;
+function syncLogs(logs) {
+  if (!Array.isArray(logs)) return;
+  var newEntries = logs.slice(_lastLogLen); _lastLogLen = logs.length;
+  for (var i = 0; i < newEntries.length; i++) appendLog(prepareLogEntry(newEntries[i]));
+}
+function prepareLogEntry(text) {
+  if (text.startsWith('[发言]') || text.includes('发言：')) return { cls:'speech', text:text };
+  if (text.includes('死亡') || text.includes('开枪')) return { cls:'death', text:text };
+  if (text.includes('投票') || text.includes('当选') || text.includes('放逐') || text.includes('PK')) return { cls:'vote', text:text };
+  if (text.includes('狼人') || text.includes('平安夜') || text.includes('第')) return { cls:'night', text:text };
+  if (text.startsWith('[遗言]')) return { cls:'speech', text:text };
+  return { cls:'system', text:text };
+}
+function appendLog(clsOrObj, text) {
+  var cls, msg;
+  if (typeof clsOrObj === 'object') { cls = clsOrObj.cls; msg = clsOrObj.text; }
+  else { cls = clsOrObj; msg = text; }
+  if (!msg) return;
+  var panel = document.getElementById('log-panel');
+  var div = document.createElement('div');
+  div.className = 'log-entry ' + cls;
+  div.textContent = msg;
+  panel.appendChild(div);
+  panel.scrollTop = panel.scrollHeight;
+  while (panel.children.length > 200) panel.firstChild.remove();
+}
+function showGameOver(winner) {
+  var overlay = document.getElementById('game-over-overlay'); overlay.classList.remove('hidden');
+  var title = document.getElementById('winner-title'), sub = document.getElementById('winner-sub');
+  if (winner === 'good') { title.textContent = '好人阵营获胜!'; title.style.color = 'var(--green)'; sub.textContent = '所有狼人已被消灭'; }
+  else if (winner === 'wolf') { title.textContent = '狼人阵营获胜!'; title.style.color = 'var(--red)'; sub.textContent = '狼人成功屠边'; }
+}
+function resetToStart() {
+  State.gameStatus = 'idle'; State.gameState = null; State.ws = null; _lastLogLen = 0;
+  document.getElementById('log-panel').innerHTML = '';
+  document.getElementById('game-over-overlay').classList.add('hidden');
+  document.getElementById('player-grid').innerHTML = '';
+  switchView('start');
+}
+async function startGame() {
+  if (State.gameStatus === 'running') return;
+  var result = await apiStartGame();
+  if (!result.success) { alert('启动失败: ' + result.message); return; }
+  _lastLogLen = 0; State.mode = result.mode; State.gameStatus = 'running';
+  switchView('game');
+  document.getElementById('log-panel').innerHTML = '';
+  document.getElementById('player-grid').innerHTML = '';
+  appendLog('system', '游戏启动中...');
+  connectWebSocket();
+  document.getElementById('btn-start').textContent = '游戏运行中...';
+  document.getElementById('btn-start').disabled = true;
+}
+async function stopGame() {
+  var result = await apiStopGame();
+  if (result.success) { appendLog('system', '游戏已停止'); resetToStart(); document.getElementById('btn-start').textContent = '开始游戏'; document.getElementById('btn-start').disabled = false; }
+}
+(function init() {
+  switchView('start');
+  document.querySelectorAll('.mode-option:not(.disabled)').forEach(function(el) {
+    el.addEventListener('click', function() {
+      document.querySelectorAll('.mode-option').forEach(function(o) { o.classList.remove('selected'); });
+      el.classList.add('selected');
+      State.mode = el.dataset.mode;
+    });
+  });
+  window.addEventListener('beforeunload', function() {
+    if (State.gameStatus === 'running') navigator.sendBeacon('/api/game/stop');
+  });
+})();
+</script>
 </body>
 </html>
